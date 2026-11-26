@@ -42,6 +42,9 @@
 
   // 带动态部分的整行文本（查找和替换面板的计数、授权面板的占位示例）
   var COUNT_RULES = [
+    // AI 工具执行状态：保留用户的请求名称和文件路径。
+    [/^Retrieved details for request ([\s\S]+?) from tab\. Unsaved edits are available at ([\s\S]+)$/, '已从标签页获取请求“$1”的详情。未保存的修改位于 $2'],
+    [/^Retrieved details for request ([\s\S]+?) from tab\.$/, '已从标签页获取请求“$1”的详情。'],
     [/^Collections \((\d+)\)$/, '集合 ($1)'],
     [/^Environments \((\d+)\)$/, '环境 ($1)'],
     [/^Replace in (\d+) selected$/, '在选中的 $1 项中替换'],
