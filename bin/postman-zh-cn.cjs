@@ -140,6 +140,15 @@ function run() {
   const defaultRoot = process.platform === 'win32' && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Postman') : null;
   if (!options.path && !defaultRoot) throw Error('此环境请指定 --path');
   const resources = fs.realpathSync(resourcesAt(options.path || defaultRoot));
+  console.log('安装目标：' + resources);
+  // Explicit version paths are allowed, but warn when the launcher has a newer install.
+  if (options.path && defaultRoot && fs.existsSync(defaultRoot)) {
+    const latestResources = fs.realpathSync(resourcesAt(defaultRoot));
+    if (path.dirname(resources).startsWith(fs.realpathSync(defaultRoot) + path.sep) && resources !== latestResources) {
+      console.warn('注意：指定的是旧版目录；本机最新版本为 ' + latestResources);
+      console.warn('Postman 快捷方式可能启动新版。请去掉 --path 自动选择最新版本，或指定 Postman 根目录。');
+    }
+  }
   const relative = path.relative(project, resources);
   if (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)) throw Error('禁止将项目目录当作安装目标');
   const asar = path.join(resources, 'app.asar');

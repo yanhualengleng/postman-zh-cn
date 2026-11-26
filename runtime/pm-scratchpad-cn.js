@@ -343,7 +343,10 @@
   try {
     if (typeof document !== 'undefined' && typeof location !== 'undefined' && isActive(location)) {
       var dict = loadDict();
-      if (dict) start(document, dict);
+      if (dict) {
+        if (document.documentElement) start(document, dict);
+        else document.addEventListener('DOMContentLoaded', function () { start(document, dict); }, { once: true });
+      }
     }
   } catch (e) {
     try { console.error('[pm-scratchpad] 初始化失败:', e); } catch (e2) {}
