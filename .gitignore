@@ -1,0 +1,9 @@
+node_modules/
+*.asar
+*.asar.unpacked/
+*backup*/
+*verification*/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

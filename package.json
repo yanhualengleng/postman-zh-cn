@@ -1,0 +1,10 @@
+{
+  "name": "postman-zh-cn-local",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Postman 简体中文运行时与可恢复的本地安装工具",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "bin": { "postman-zh-cn": "bin/postman-zh-cn.cjs" },
+  "scripts": { "start": "node bin/postman-zh-cn.cjs", "dry-run": "node bin/postman-zh-cn.cjs --dry-run" }
+}
