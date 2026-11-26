@@ -147,6 +147,11 @@
     // Postman 实际在用的语言（en-US / ja），取自它最近请求的语言包 URL。
     // 用来判断用户在设置里点的是不是当前语言：是的话 Postman 的 onChange 会直接 return（e===o），只能由我们刷新。
     var postmanLocale = null;
+    var processLocale = null;
+    if (!isWeb) {
+      try { processLocale = require('./pm-translation-tools.cjs').createRuntime(__dirname); }
+      catch (error) { console.warn('[pm-chinese] Locale capture unavailable:', error.message); }
+    }
 
     // 命中则返回合并后的 JSON 字符串，否则返回 null（透传）
     function translate(url, jsonText) {
@@ -157,9 +162,14 @@
       if (INTERCEPT_LANGS.indexOf(m[1]) < 0) return null;
       var mod = stripHash(m[2]);
       var tr = TRANSLATIONS[mod];
-      if (!tr) return null;
+      if (!tr && !processLocale) return null;
       try {
         var obj = JSON.parse(jsonText);
+        if (processLocale) {
+          var localized = processLocale(mod, obj, tr || {}, m[1]);
+          if (localized) return JSON.stringify(localized);
+        }
+        if (!tr) return null;
         deepMerge(obj, tr);
         return JSON.stringify(obj);
       } catch (e) {

@@ -5,8 +5,9 @@ const path = require('node:path');
 const { Script } = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const { parse, pack, hash } = require('../lib/asar.cjs');
+const { customFiles, extractLocales } = require('../lib/locales.cjs');
 const project = path.resolve(__dirname, '..');
-const runtimeNames = ['pm-chinese.js', 'pm-main-cn.js', 'pm-scratchpad-cn.js', 'pm-chinese-data.json', 'pm-main-data.json', 'pm-scratchpad-data.json', 'pm-chinese-langs.json', 'LICENSE.postman-chinese-injector.txt'];
+const runtimeNames = ['pm-chinese.js', 'pm-main-cn.js', 'pm-scratchpad-cn.js', 'pm-chinese-data.json', 'pm-main-data.json', 'pm-scratchpad-data.json', 'pm-chinese-langs.json', 'LICENSE.postman-chinese-injector.txt', 'pm-translation-tools.cjs'];
 
 function assertStopped() {
   const output = process.platform === 'win32'
@@ -125,12 +126,17 @@ function run() {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--dry-run') options.dry = true;
     else if (args[i] === '--restore') options.restore = true;
-    else if (args[i] === '--path' && args[i + 1] && !args[i + 1].startsWith('--')) options.path = args[++i];
+    else if (args[i] === '--extract-only') options.extractOnly = true;
+    else if (['--path', '--locale-dir', '--output'].includes(args[i]) && args[i + 1] && !args[i + 1].startsWith('--')) {
+      const key = { '--path': 'path', '--locale-dir': 'localeDir', '--output': 'output' }[args[i]];
+      options[key] = args[++i];
+    }
     else if (args[i] === '--help' || args[i] === '-h') {
-      console.log('node bin/postman-zh-cn.cjs [--path <Postman/app-*/resources目录>] [--dry-run] [--restore]\nWindows 默认按版本号发现 LOCALAPPDATA/Postman 下最新 app-*；其他系统须 --path。');
+      console.log('node bin/postman-zh-cn.cjs [--path <Postman/app-*/resources目录>] [--dry-run] [--restore] [--extract-only] [--locale-dir <官方英语JSON目录>] [--output <导出目录>]\nWindows 默认按版本号发现 LOCALAPPDATA/Postman 下最新 app-*；其他系统须 --path。');
       return;
     } else throw Error('未知参数或缺少参数值：' + args[i]);
   }
+  if (options.restore && options.extractOnly) throw Error('--restore 不能与 --extract-only 同用');
   const defaultRoot = process.platform === 'win32' && process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Postman') : null;
   if (!options.path && !defaultRoot) throw Error('此环境请指定 --path');
   const resources = fs.realpathSync(resourcesAt(options.path || defaultRoot));
@@ -149,12 +155,38 @@ function run() {
   for (const item of [asar, runtime, backup, lock]) {
     if (fs.existsSync(item) && fs.lstatSync(item).isSymbolicLink()) throw Error('拒绝符号链接目标');
   }
-  assertStopped();
+  if (!options.extractOnly) assertStopped();
   const original = fs.readFileSync(asar);
   const originalHash = hash(original);
   const currentRuntime = treeHashes(runtime);
+  const version = path.basename(path.dirname(resources)).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const output = path.resolve(options.output || path.join(project, 'translations', 'missing', version));
+  for (const protectedDirectory of [resources, path.join(project, 'runtime'), path.join(project, 'translations', 'custom'), path.join(project, '.git')]) {
+    const relativeOutput = path.relative(protectedDirectory, output);
+    const relativeProtected = path.relative(output, protectedDirectory);
+    const contains = relative => relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+    if (contains(relativeOutput) || contains(relativeProtected)) throw Error('导出目录不能与安装资源、代码或自定义译文目录重叠');
+  }
+  const custom = options.restore ? [] : customFiles(project);
+  const configText = JSON.stringify({ version, output }, null, 2) + '\n';
+  const actual = treeHashes(path.join(project, 'runtime'));
+  const desired = { ...actual, 'pm-capture-config.json': hash(Buffer.from(configText)) };
+  if (custom.length) {
+    desired['custom/'] = 'directory';
+    for (const file of custom) desired['custom/' + file.name] = hash(Buffer.from(file.text));
+  }
+  const sorted = value => Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+  const desiredHashes = sorted(desired);
+  if (!options.restore) {
+    const expected = JSON.parse(fs.readFileSync(path.join(project, 'runtime-manifest.json'), 'utf8'));
+    if (!equal(actual, expected) || !runtimeNames.every(name => actual[name]) || Object.keys(actual).length !== runtimeNames.length) throw Error('项目 runtime hash/文件白名单校验失败');
+    extractLocales({ archive: parse(original), localeDir: options.localeDir, output, translations: JSON.parse(fs.readFileSync(path.join(project, 'runtime', 'pm-chinese-data.json'), 'utf8')), custom, dry: options.dry });
+    console.log('缺失文案目录：' + output + '\n译文放入 translations/custom/<模块名>.json，保留键名和占位符，再双击 install.bat 更新。');
+  }
+  if (options.extractOnly) return;
   let manifest;
   let payload;
+  let previousManifest = null;
   if (options.restore) {
     manifest = JSON.parse(fs.readFileSync(path.join(backup, 'manifest.json'), 'utf8'));
     if (manifest.format !== 1) throw Error('不支持的备份格式');
@@ -163,12 +195,18 @@ function run() {
     if (![manifest.originalHash, manifest.patchedHash].includes(originalHash)) throw Error('当前 ASAR 已被其他程序修改，拒绝覆盖');
     if (![manifest.originalRuntime, manifest.patchedRuntime, null].some(value => equal(currentRuntime, value))) throw Error('当前 runtime 已被其他程序修改，拒绝覆盖');
   } else {
-    if (fs.existsSync(backup)) throw Error('已有备份；请先 --restore，勿覆盖首次备份');
-    const expected = JSON.parse(fs.readFileSync(path.join(project, 'runtime-manifest.json'), 'utf8'));
-    const actual = treeHashes(path.join(project, 'runtime'));
-    if (!equal(actual, expected) || !runtimeNames.every(name => actual[name]) || Object.keys(actual).length !== runtimeNames.length) throw Error('项目 runtime hash/文件白名单校验失败');
-    payload = buildArchive(original);
-    manifest = { format: 1, originalHash, patchedHash: hash(payload), originalRuntime: currentRuntime, patchedRuntime: actual };
+    if (fs.existsSync(backup)) {
+      previousManifest = fs.readFileSync(path.join(backup, 'manifest.json'));
+      manifest = JSON.parse(previousManifest.toString('utf8'));
+      if (manifest.format !== 1 || originalHash !== manifest.patchedHash || !equal(currentRuntime, manifest.patchedRuntime)) throw Error('当前安装与备份记录不一致；请先恢复或检查修改');
+      const baseline = fs.readFileSync(path.join(backup, 'app.asar'));
+      if (hash(baseline) !== manifest.originalHash || !equal(treeHashes(path.join(backup, 'runtime')), manifest.originalRuntime)) throw Error('备份校验失败');
+      payload = buildArchive(baseline);
+      manifest = { ...manifest, patchedHash: hash(payload), patchedRuntime: desiredHashes };
+    } else {
+      payload = buildArchive(original);
+      manifest = { format: 1, originalHash, patchedHash: hash(payload), originalRuntime: currentRuntime, patchedRuntime: desiredHashes };
+    }
   }
   console.log(`${options.dry ? 'DRY-RUN' : '执行'} ${options.restore ? '恢复' : '安装'}；当前 SHA256=${originalHash}；目标 SHA256=${hash(payload)}`);
   if (options.dry) { console.log('只读完成：未创建锁、备份或暂存文件，未修改应用。'); return; }
@@ -184,7 +222,7 @@ function run() {
     if (fs.existsSync(staged) || fs.existsSync(previous)) throw Error('发现未完成事务目录；保留现场，请按 README 恢复');
     assertStopped();
     if (hash(fs.readFileSync(asar)) !== originalHash || !equal(treeHashes(runtime), currentRuntime)) throw Error('文件在检查后发生变化');
-    if (!options.restore) {
+    if (!options.restore && !previousManifest) {
       fs.mkdirSync(backup);
       durableWrite(path.join(backup, 'app.asar'), original);
       if (currentRuntime !== null) fs.cpSync(runtime, path.join(backup, 'runtime'), { recursive: true, errorOnExist: true, force: false });
@@ -195,6 +233,11 @@ function run() {
     if (desiredRuntime !== null) {
       ownsStage = true;
       fs.cpSync(options.restore ? path.join(backup, 'runtime') : path.join(project, 'runtime'), staged, { recursive: true, errorOnExist: true, force: false });
+      if (!options.restore) {
+        fs.writeFileSync(path.join(staged, 'pm-capture-config.json'), configText, { flag: 'wx' });
+        if (custom.length) fs.mkdirSync(path.join(staged, 'custom'));
+        for (const file of custom) fs.writeFileSync(path.join(staged, 'custom', file.name), file.text, { flag: 'wx' });
+      }
       if (!equal(treeHashes(staged), desiredRuntime)) throw Error('暂存 runtime 校验失败');
     }
     assertStopped();
@@ -206,6 +249,7 @@ function run() {
     replaceFile(asar, payload);
     archiveChanged = true;
     if (hash(fs.readFileSync(asar)) !== hash(payload) || !equal(treeHashes(runtime), desiredRuntime)) throw Error('安装后 hash 校验失败');
+    if (previousManifest) replaceFile(path.join(backup, 'manifest.json'), Buffer.from(JSON.stringify(manifest, null, 2)));
     committed = true;
     if (runtimeMoved) { fs.rmSync(previous, { recursive: true }); runtimeMoved = false; }
     if (options.restore) fs.rmSync(backup, { recursive: true });
